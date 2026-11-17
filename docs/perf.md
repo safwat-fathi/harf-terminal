@@ -231,6 +231,9 @@ app draws: it draws at most once per display refresh). ReleaseFast, Apple M1, ma
 
 **Result: not meaningful (5 to 13 percent), so P4 (two-phase render-state lock) is closed as not needed.**
 
+**Correction (2026-11-17):** this gate drew on a fixed 8 ms clock, at 80x24. The app does not: it rescans every visible row on every wake,
+so under a flood the scan, not the draw, is what holds the lock. See "Flood throughput through the real app" at the end of this file.
+
 Two other findings:
 - A first attempt drew back to back with no gap between frames and the flood did not finish in over five minutes (the drawing
   thread kept re-taking `term_lock` before the parser thread could). That is not a load the app produces, because redraws are
@@ -438,3 +441,62 @@ not record whether it was connected during the low-state runs, so this is a hypo
 - `bench/footprint.sh` now exits 1 above 30 MB (`MAX_MB` to change), so a change can be checked; it also prints the breakdown, so the
   state can be read off each run. Open: repeat the measurement with and without the external display, and decide what the
   target means when graphics accounting alone can move it by 10 MB.
+
+## Flood throughput through the real app (2026-11-17)
+
+Prompted by a review of PR #2 (a benchmark and profile taken on another machine, macOS 15.6.1, chip and window size not recorded). I
+checked its claim on this machine before writing anything down. Apple M1, macOS 27.0.1, Release build of commit 4be6dd6
+(`macos/build-app.sh`, Zig 0.17.1). `bench/profile-seq.sh` launches its own instance, runs `seq 1 2000000` as the child, samples the app
+with `sample` for 2 s inside the flood, and prints the flood time and app CPU seconds. The floor is a bare Python `pty` reader running the
+same load (no parsing, no drawing; the method of "Slice 4: throughput" above).
+
+**The floor moved during the evening, so ratios only mean something within a set.** The bare reader took 5.44, 5.37, 5.41 s for the
+`seq` in set 1 and 2.96 to 3.75 s (eight runs) in set 2, when the machine's load average was 22 to 26. Harf moved with it.
+
+| Set | Window | Grid | Harf flood time (s) | App CPU (s) | Bare reader, same set (s) | Ratio |
+|---|---|---|---|---|---|---|
+| 1 | `HARF_CONTENT_SIZE=700x420` | 80x24 (1920 cells) | 7.49, 7.49, 7.48 | 6.8 | 5.41 | 1.38 |
+| 1 | default 1000x720 | 139x42 (5838 cells) | 12.97, 12.78, 12.95 | 12.3 | 5.41 (taken between runs 1 and 2) | 2.39 |
+| 2 | `HARF_CONTENT_SIZE=700x420` | 80x24 | 5.86 (one run) | 5.0 | 3.33 before, 3.50 after | 1.7 |
+| 2 | default 1000x720 | 139x42 | 9.12 (one run) | 8.2 | 3.50 before, 3.75 after | 2.5 |
+
+So on this machine the flood takes about 1.4 to 1.7 times the floor at 80x24 and about 2.4 to 2.5 times at the default window, with the app
+using about one core the whole time.
+
+- **The PR's profile reproduces.** Shares are of the main thread's samples in the 2 s window (the sampler delivered 574 to 658 per thread, not 2000,
+  so quote shares, not counts). The main thread is in `TerminalController.invalidateChangedRows` -> `harf_term_dirty_rows` for 59 to 61 percent
+  (80x24, set 1; 68 percent in set 2) and 44 to 54 percent (default, set 1; 61 percent in set 2), against 75 percent in the PR's profile. The parser
+  thread, by its own samples, waits on the session lock (`__psynch_mutexwait`) 66 to 67 percent of the time at 80x24 and 63 to 72 percent at the
+  default window (the PR: 74 percent). Inside the scan's call subtree: `gather` 34 to 48 percent, `rowHash` 40 to 51 percent, of which
+  `Wyhash.update` 31 to 40 percent. (The draw path also gathers and hashes the rows it draws; these counts are only the scan's subtree.)
+- **The time over the floor grows with the grid.** 2.1 s at 80x24 against 7.5 s at 139x42 in set 1, 2.5 s against 5.5 s in set 2: 2.2 to 3.6 times
+  more for 3.0 times the cells. The PR said the gap grows with window size without testing it. The default window changed from the 80x24 class to
+  1000x720 (config `window_width`/`window_height`, commit a78bba1) after the P3 and P4 numbers above were taken.
+- **Why it is a loop.** `wakeOnMain` (`TerminalView.swift`) re-arms the wake (`harf_term_wake_handled`) before it scans, so during a flood
+  the I/O thread wakes the main thread again after every read and `lock, scan every row, unlock` runs back to back. Its rate is bounded by its
+  own cost, not by the display refresh; only the draw is coalesced by AppKit. The P4 note above predicted this ("if a future feature draws in
+  a tight loop"), and the P4 gate did not model it.
+- **Block writes are hit hardest** (`bench/bench.sh Harf`, run as the app's own child at the default window, one session, three runs each).
+  `cat` of a 50 MB text file took 10.62, 8.29, 11.54 s; a bare reader takes 0.23, 0.27, 0.29 s for the same file (50,300 reads of about 1 KB), so
+  Harf is 30 to 45 times the floor. One scan per 1 KB read is what the code does (the parser takes the lock for each chunk and each parse wakes
+  the main thread), and 50,300 scans at about 0.2 ms (38 ns per cell from P3, times 5838 cells) is about 10 s. That is arithmetic from P3's per-cell
+  cost, not a separate measurement, but it matches. The same run: `seq` 12.06, 12.66, 12.85 s; 200,000 ANSI colour lines from a file 0.97 to 1.01 s
+  (no floor measured); app CPU 76 s across the loads. The PR measured `cat` at 1.76 s on its machine, with an unknown grid.
+- **Footprint at the default window** (same run): 37 MB idle, 88 MB after the loads, 59 MB after `clear` and 22 s. The PR saw 47, 77 and 65 MB,
+  so its growth is real at this window size. The slice 4 table above recorded a flat 26 MB after a 100 MB flood at 700x420. The residue is not
+  attributed: a `footprint` category breakdown after a flood at the default window was attempted three times and not obtained (the launches
+  opened no window, so the child never ran; a `System Events` AppleEvent timed out at the same moment, and the GUI worked again later). Do not
+  claim a cause until it is read.
+
+Not established by the PR, and not by this: any comparison with Terminal.app (no Terminal.app run here; the PR's single run had an unrecorded
+window size and a Terminal.app that was already running), the PR's "10 to 24 percent lower memory", and "colour parsing is not the bottleneck"
+(its colour test was a zsh loop, 0.07 s). The PR's 14 and 18 percent gaps against Terminal.app (`cat`, CPU seconds) are inside the spread seen
+between sessions on its single run; that sentence applies to its Terminal.app numbers only, because on this machine `cat` is far outside any spread.
+
+**Recommended next step (not built).** Throttle the scan to one per display frame (about 1/120 s), with a trailing scan so the last frame is
+never lost. Skipping a scan is safe because `dirtyRows` compares against the hash recorded at the last draw, not the last scan, so the next scan
+sees everything that changed since; the dirty-rows differential tests stay valid. Cost: while output streams, an echo can wait up to one interval
+(about 8 ms) on top of the refresh wait; at an idle prompt nothing changes (the first wake scans at once). Gate for calling it done: the share of the
+main thread in the scan under 5 percent, and the full app within the spread of the bare-reader floor (about 8 percent) at both window sizes,
+with the floor measured in the same set. If that is not enough: the library's per-row dirty flags (needs the cursor, focus, selection and find
+matches tracked by Harf; extend the `draw.zig` differential tests first), or one `Wyhash` call per row instead of about seven per cell.
