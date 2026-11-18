@@ -200,7 +200,7 @@ pub const CommandKind = enum { prompt_start, input_start, output_start, command_
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
 
 /// What the terminal answers to XTVERSION (CSI > q). Keep the number in step with build.zig.zon.
-pub const xtversion = "Harf 0.3.3";
+pub const xtversion = "Harf 0.4.3";
 
 /// Harf's default colors (the slice 2 theme): foreground 0.92, background (0.06, 0.06, 0.07).
 pub const theme_fg: Rgb = .{ .r = 235, .g = 235, .b = 235 };

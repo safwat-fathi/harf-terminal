@@ -8,7 +8,7 @@
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleExecutable</key><string>Harf</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3.3</string>
+    <key>CFBundleShortVersionString</key><string>0.4.3</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSLocalNetworkUsageDescription</key><string>Commands you run in the terminal (ping, ssh, adb) can reach devices on your local network.</string>
