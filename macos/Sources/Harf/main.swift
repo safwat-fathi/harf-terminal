@@ -398,6 +398,42 @@ func selfTest() -> Never {
         _ = win
     }
 
+    // 1l. The wake path scans the grid for changed rows at most once per `scanInterval`. A flood used to wake it after every read, and each
+    // scan held the session lock, so the parser spent most of a flood waiting for the main thread (docs/perf.md, "Flood throughput").
+    do {
+        trackDirty = true
+        defer { trackDirty = false }
+        // (a) Two wakes in one interval: the first scans at once (nothing is delayed at a quiet prompt), the second waits and scans once
+        // the interval is over, and then nothing runs: no timer ticks on.
+        guard let q = TerminalController(argv: ["/bin/sh", "-c", "sleep 30"], frame: NSSize(width: 700, height: 420)) else { fail("cannot start the scan session") }
+        _ = pump(0.3) { false }
+        let base = measureScans
+        q.wakeOnMain()
+        if measureScans != base + 1 { fail("scan throttle: the first wake after a quiet moment made \(measureScans - base) scans, not 1") }
+        q.wakeOnMain()
+        if measureScans != base + 1 { fail("scan throttle: a second wake inside the interval scanned at once (\(measureScans - base) scans); it should wait") }
+        if !pump(0.5, until: { measureScans == base + 2 }) { fail("scan throttle: the deferred scan never ran (\(measureScans - base) scans)") }
+        _ = pump(0.3) { false }
+        if measureScans != base + 2 { fail("scan throttle: \(measureScans - base - 2) scans happened with no wake to cause them") }
+        q.close()
+        // (b) A flood: the wakes arrive after every read, and the scans stay within one per interval.
+        let n = 300_000
+        guard let f = TerminalController(argv: ["/bin/sh", "-c", "sleep 0.3; seq 1 \(n); sleep 30"], frame: NSSize(width: 700, height: 420)) else { fail("cannot start the flood session") }
+        let t0 = ProcessInfo.processInfo.systemUptime
+        let s0 = measureScans
+        if !pump(120, until: { (0..<f.gridSize.rows).contains { f.rowText($0).contains(String(n)) } }) { fail("scan throttle: the last line of the flood never appeared") }
+        let elapsed = ProcessInfo.processInfo.systemUptime - t0
+        let scans = measureScans - s0
+        let allowed = Int(elapsed / scanInterval) + 5
+        if scans > allowed { fail(String(format: "scan throttle: %d scans in %.2f s of flood; at most %d (one per %.1f ms)", scans, elapsed, allowed, scanInterval * 1000)) }
+        _ = pump(0.3) { false }
+        let settled = measureScans
+        _ = pump(0.3) { false }
+        if measureScans != settled { fail("scan throttle: \(measureScans - settled) scans happened after the output had stopped") }
+        print(String(format: "selftest: scan throttle: a %d-line flood took %.2f s and made %d scans (at most %d); idle afterwards", n, elapsed, scans, allowed))
+        f.close()
+    }
+
     // 2. Typing (a letter, an Arabic letter, Return) goes through the view's own key path.
     let echo = ["/bin/sh", "-c", "read x; echo got:$x"]
     func rows(_ c: TerminalController) -> String { (0..<6).map { c.rowText($0) }.joined(separator: "|") }
@@ -975,7 +1011,9 @@ func selfTest() -> Never {
         wc.split(first, vertical: true)
         let second = wc.allPanes[1]
         second.controller.sendText("\(watch)\n")
-        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).contains("READY") && !p.controller.rowText($0).contains("echo") } }
+        // The program's own output is a row that is exactly READY. The typed command is echoed before the shell has run it (and wraps
+        // at the pane's width, which can split "echo" across rows), so a row that merely contains READY proves nothing.
+        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).trimmingCharacters(in: .whitespaces) == "READY" } }
         if !pump(8, until: { ready(first) && ready(second) }) { fail("focus: the two panes never became ready") }
         wc.window.makeFirstResponder(second.controller.view)
         let event = keyEvent(38, "j", [.command])
@@ -1023,7 +1061,8 @@ func selfTest() -> Never {
         let second = wc.allPanes[1]
         first.controller.sendText("\(watch)\n")
         second.controller.sendText("\(watch)\n")
-        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).contains("READY") && !p.controller.rowText($0).contains("echo") } }
+        // As in the focus test above: only a row that is exactly READY is the program's output, not the echo of the typed command.
+        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).trimmingCharacters(in: .whitespaces) == "READY" } }
         func heard(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).contains("1b 5b 49 1b 5b 4f") } }   // in, then out
         if !pump(8, until: { ready(first) && ready(second) }) { fail("pane focus: the two panes never became ready") }
         // the window becomes key with the keyboard in the second pane: only that program hears focus in

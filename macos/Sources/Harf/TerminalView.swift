@@ -100,11 +100,14 @@ private let notifyCallback: @convention(c) (UnsafeMutableRawPointer?, UnsafePoin
 // lookup at launch and nothing per frame when off.
 nonisolated(unsafe) var measureFrameEnd: Double = 0
 nonisolated(unsafe) var measureDirtyMarks = 0   // how many times the wake path has marked the view dirty (HARF_MEASURE only)
+nonisolated(unsafe) var measureScans = 0   // how many times the wake path has scanned the grid for changed rows (HARF_MEASURE and the self-test only)
 nonisolated(unsafe) var measureDirtyRect = NSRect.null   // the union of the rectangles the wake path invalidated since the last reset
-nonisolated(unsafe) var trackDirty = false   // the self-test sets it to record the two values above; HARF_MEASURE=1 sets it for the whole run
+nonisolated(unsafe) var trackDirty = false   // the self-test sets it to record the three values above; HARF_MEASURE=1 sets it for the whole run
 /// HARF_FULL_REDRAW=1 draws the whole view on every change, as before dirty rows: an escape hatch for telling whether a
 /// drawing oddity comes from partial redraws.
 private let forceFullRedraw = ProcessInfo.processInfo.environment["HARF_FULL_REDRAW"] == "1"
+/// The wake path scans the grid for changed rows at most once per interval (one frame at 120 Hz); see `wakeOnMain`.
+let scanInterval = 1.0 / 120
 private let measureFrames = ProcessInfo.processInfo.environment["HARF_MEASURE"] == "1"
 private var recordDirty: Bool { measureFrames || trackDirty }
 private let traceStartup = ProcessInfo.processInfo.environment["HARF_TRACE"] == "startup"
@@ -464,8 +467,26 @@ final class TerminalController {
 
     // MARK: events from the session (already on the main thread)
 
-    fileprivate func wakeOnMain() {
+    private var lastScan = -Double.infinity   // `systemUptime` when the last scan began
+
+    /// The session woke us. The scan below visits every visible row with the session lock held, and during a flood the I/O thread wakes us
+    /// after every read, so unthrottled it ran back to back and the parser spent most of its time waiting for the lock (docs/perf.md,
+    /// "Flood throughput"). So the first wake after a quiet moment scans at once, and one that follows a scan by less than `scanInterval`
+    /// waits out the rest of the interval. The wake stays armed until `scan` re-arms it, so no more wakes arrive while one is waiting:
+    /// the timer is one-shot and idle costs nothing. A skipped scan loses nothing: `dirtyRows` compares with what was last *drawn*.
+    /// An echo during streaming output can wait up to one interval (about 8 ms) for its scan.
+    func wakeOnMain() {
+        let wait = scanInterval - (ProcessInfo.processInfo.systemUptime - lastScan)
+        if wait <= 0 { return scan() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated { self?.scan() }
+        }
+    }
+
+    private func scan() {
         guard let t = term else { return }
+        lastScan = ProcessInfo.processInfo.systemUptime
+        if recordDirty { measureScans += 1 }
         harf_term_wake_handled(t)   // re-arm before reading, so output arriving during the draw wakes us again
         followProgramGrid()
         invalidateChangedRows()
