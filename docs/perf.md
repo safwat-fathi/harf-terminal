@@ -493,15 +493,13 @@ Not measured after the change, because the console was locked and no window woul
   runs). `cat` of a 50 MB text file took 10.62, 8.29, 11.54 s; a bare reader takes 0.23, 0.27, 0.29 s for the same file (50,300 reads of about
   1 KB). The scan ran once per 1 KB read, and 50,300 scans at about 0.2 ms (38 ns per cell from P3, times 5838 cells) is about 10 s. That is
   arithmetic from P3's per-cell cost, not a measurement, but it matches. That session was in the machine's slower state (its `seq` took 12.7 s,
-  against 7.7 s unsampled in the A/B above), so quote the order of magnitude, not the multiple. The after-change `cat` time is not measured yet.
+  against 7.7 s unsampled in the A/B above), so quote the order of magnitude, not the multiple. The after-change `cat` time is under "Follow-up" below.
 - **Footprint at the default window** (same bench.sh run, before the change): 37 MB idle, 88 MB after the loads, 59 MB after `clear` and 22 s. The PR
   saw 47, 77 and 65 MB, so its growth is real at this window size. The slice 4 table above recorded a flat 26 MB after a 100 MB flood at 700x420.
-  The residue is not attributed: a `footprint` category breakdown after a flood at the default window was attempted three times and not obtained
-  (the launches opened no window; the console was locked). Do not claim a cause until it is read.
+  The attribution is under "Follow-up" below: the growth is transient window backing store (IOSurface), not scrollback and not a leak.
 
-Not established by the PR, and not by this: any comparison with Terminal.app (not run here; the PR's single run had an unrecorded window size and a
-Terminal.app that was already running), the PR's "10 to 24 percent lower memory", and "colour parsing is not the bottleneck" (its colour test was a
-zsh loop, 0.07 s).
+Not established by the PR: its Terminal.app comparison (a single run with an unrecorded window size, against a Terminal.app that was already running;
+a fresh-instance run is under "Follow-up" below) and "colour parsing is not the bottleneck" (its colour test was a zsh loop, 0.07 s).
 
 ### The change
 
@@ -519,6 +517,48 @@ scan. Cost: an echo during streaming output can wait up to one interval (about 8
   after focus in") fails in some runs. 3 of 8 runs with the throttle and 3 of 8 runs on the code without it; plain `--selftest` passed 5 of 5 with the
   throttle. It needs its own look.
 
-Still open: `cat` and the scan share at the default window after the change; Terminal.app on this machine; the post-flood footprint breakdown. If the
-scan ever matters again at much larger windows: the library's per-row dirty flags (Harf would need to track the cursor, focus, selection and find
-matches itself; extend the `draw.zig` differential tests first), or one `Wyhash` call per row instead of about seven per cell.
+### Follow-up (2026-11-18, same machine, one session, `macos/.build/Harf.app` at fe069a8 unless noted)
+
+`bench/bench.sh` run as each app's own child (`open -n <bundle> --env HARF_CHILD_CMD=...`), default window (139x42), three runs, the median in
+brackets. The bare PTY reader measured in the same ten minutes took 0.44 to 0.52 s for the `cat` file and 0.04 s for the colour file. These two runs
+were made one after the other, not interleaved, so use the `cat` and colour rows (a factor of 10) and the CPU row, not small differences in `seq`.
+
+| Load | Before the change | After the change | Bare reader |
+|---|---|---|---|
+| `cat` of a 50 MB file | 5.59, 5.58, 5.72 s (5.59) | 0.52, 0.51, 0.50 s (0.51) | 0.44 to 0.52 s |
+| 200k colour lines from a file | 0.58, 0.58, 0.71 s (0.58) | 0.07, 0.07, 0.07 s (0.07) | 0.04 s |
+| `seq 1 2000000` | 7.39, 6.02, 5.97 s (6.02) | 4.42, 5.17, 4.49 s (4.49) | 4.65 to 5.37 s, measured right after (3.9 s earlier) |
+| app CPU, all nine loads | 41.15 s | 13.21 s | |
+
+- **Block writes were the worst case and are fixed.** `cat` went from about 11 times the floor to about 1.0 to 1.1 times it; the throttled build at 80x24
+  (the current build) gave 0.65, 0.55, 0.57 s. This session's `cat` before the change (5.6 s) is half of the earlier session's 10.6 s: the same code, a
+  different machine state, which is why only same-set comparisons count. The floor of `seq` drifted from 3.9 to 5 s between sets for the same reason.
+- **Scan share at the default window** (`bench/profile-seq.sh`, sampled, current build): `invalidateChangedRows` is 13, 11, 10 percent of the main
+  thread's samples (76 of 570, 66 of 625, 63 of 627), against 2 to 7 percent at 80x24 before. The gate I set (under 5 percent) is met at 80x24 and not at
+  the default window: a scan costs about 3 times as much with 3 times the cells, and the throttle bounds how often it runs, not what one costs. The
+  flood itself is within the floor (table above), so this is a lower-order cost; it is what the dirty flags or the single-hash change in "Still open"
+  would reduce, if it ever matters.
+- **The post-flood memory growth is transient window backing store.** A 100 MB flood (`yes | head -c 100000000`) at the default window: 39 MB idle (60 MB
+  in a second run; the startup state varies), 75 MB during the flood, 40 MB 15 s after, and 40 MB at 60 s. At the peak the `footprint` categories
+  were: IOSurface 14 -> 42 MB (1 -> 3 surfaces), IOAccelerator (graphics) 1.3 -> 4.1 MB, Malloc Small flat at 14 MB. So it is not scrollback (capped at
+  1 MiB per session) and not a leak. The `bench.sh` runs agree: loaded 70 MB before the change and 76 MB after, final 54 and 61 MB.
+- **Terminal.app on this machine** (a fresh instance, `open -n -a Terminal` on a `.command` file, its default window 125x27, so a smaller grid than
+  Harf's 139x42; the table compares the apps as they open):
+
+  | | Terminal.app 125x27 | Harf 139x42 | Harf 80x24 |
+  |---|---|---|---|
+  | `seq 1 2000000` | 4.48, 4.45, 4.55 s | 4.42, 5.17, 4.49 s | 6.41, 5.30, 4.56 s |
+  | `cat` of 50 MB | 2.21, 2.20, 2.20 s | 0.52, 0.51, 0.50 s | 0.65, 0.55, 0.57 s |
+  | 200k colour lines | 0.30, 0.29, 0.29 s | 0.07 s | 0.06, 0.07, 0.07 s |
+  | app CPU, all loads | 20.23 s | 13.21 s | 14.15 s |
+  | footprint idle / loaded / final | 77 / 406 / 405 MB | 40 / 76 / 61 MB | 40 / 50 / 40 MB |
+
+  Harf is about 4 times faster on `cat` and the colour file, equal on `seq` (the floor-bound case), and uses less CPU and much less memory under load
+  (Terminal.app keeps its scrollback: 405 MB after the loads). The PR's "14 to 25 percent slower" no longer holds after the change. One session, one
+  machine, and the Harf `seq` runs swung with the floor, so treat `seq` as a tie.
+- One launch of the throttled bundle never ran its child (an instance was alive for ten minutes and wrote nothing); a probe and a retry of the same
+  bundle ran normally. The cause was not found.
+
+Still open: the pane-focus flake above. If the scan ever matters again at larger windows (it is 10 to 13 percent of the main thread at 139x42): the
+library's per-row dirty flags (Harf would need to track the cursor, focus, selection and find matches itself; extend the `draw.zig` differential tests
+first), or one `Wyhash` call per row instead of about seven per cell.
