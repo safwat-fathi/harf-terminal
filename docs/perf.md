@@ -513,9 +513,13 @@ scan. Cost: an echo during streaming output can wait up to one interval (about 8
 - Keypress to draw (`HARF_MEASURE=1 Harf --selftest`, section 1h), after: median 2.11, 1.90, 1.96 ms, p95 about 3.1 ms; the dirty-rows work above
   recorded 1.87 to 2.32 ms. Unchanged, as expected, because the first wake after a quiet moment is not delayed.
 - `Harf --selftest`: ok (23 s before, 26 s after). `zig build test`: 279 of 282 tests passed, 3 skipped (the `HARF_BENCH` ones); the Zig sources are unchanged.
-- **A flaky check that is not this change:** with `HARF_MEASURE=1`, the pane-focus section ("the pane that lost the keyboard did not hear focus out
-  after focus in") fails in some runs. 3 of 8 runs with the throttle and 3 of 8 runs on the code without it; plain `--selftest` passed 5 of 5 with the
-  throttle. It needs its own look.
+- **A flaky check that was not this change, now fixed:** with `HARF_MEASURE=1`, the pane-focus section ("the pane that lost the keyboard did not hear
+  focus out after focus in") failed in some runs, 3 of 8 with the throttle and 3 of 8 without it. It is a test race, found by loading the machine
+  (8 CPU-bound processes: it then failed 7 of 7 full runs; on an idle machine 0 of 8). The test waited for a row that contained `READY` and not
+  `echo`, but the tty echoes the typed command before the shell has run it, and at a split pane's width the echo wraps inside the word `echo`, so the
+  wait could end on the echo alone. The test then sent focus in and out before the program had asked for them (mode 1004), so the program heard
+  nothing and `head -c 6` never finished. The app was right: a program that has not asked is not told. The wait now needs a row that is exactly
+  `READY` (two tests had the same helper). After: 0 failures in 28 isolated runs under heavy load (the old wait failed 3 of 20 in the same setup).
 
 ### Follow-up (2026-11-18, same machine, one session, `macos/.build/Harf.app` at fe069a8 unless noted)
 
@@ -559,6 +563,8 @@ were made one after the other, not interleaved, so use the `cat` and colour rows
 - One launch of the throttled bundle never ran its child (an instance was alive for ten minutes and wrote nothing); a probe and a retry of the same
   bundle ran normally. The cause was not found.
 
-Still open: the pane-focus flake above. If the scan ever matters again at larger windows (it is 10 to 13 percent of the main thread at 139x42): the
+Still open: self-test sections 2c (Ctrl+C under kitty flags 5) and the shortcut checks fail while the active keyboard layout is not a Latin one
+(with Arabic PC active, Ctrl+C reports the layout's key, `CSI 1572...`, which is what the kitty protocol asks for, and Cmd+N is not matched), so
+`--selftest` passes only on a Latin layout. If the scan ever matters again at larger windows (it is 10 to 13 percent of the main thread at 139x42): the
 library's per-row dirty flags (Harf would need to track the cursor, focus, selection and find matches itself; extend the `draw.zig` differential tests
 first), or one `Wyhash` call per row instead of about seven per cell.

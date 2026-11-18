@@ -1011,7 +1011,9 @@ func selfTest() -> Never {
         wc.split(first, vertical: true)
         let second = wc.allPanes[1]
         second.controller.sendText("\(watch)\n")
-        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).contains("READY") && !p.controller.rowText($0).contains("echo") } }
+        // The program's own output is a row that is exactly READY. The typed command is echoed before the shell has run it (and wraps
+        // at the pane's width, which can split "echo" across rows), so a row that merely contains READY proves nothing.
+        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).trimmingCharacters(in: .whitespaces) == "READY" } }
         if !pump(8, until: { ready(first) && ready(second) }) { fail("focus: the two panes never became ready") }
         wc.window.makeFirstResponder(second.controller.view)
         let event = keyEvent(38, "j", [.command])
@@ -1059,7 +1061,8 @@ func selfTest() -> Never {
         let second = wc.allPanes[1]
         first.controller.sendText("\(watch)\n")
         second.controller.sendText("\(watch)\n")
-        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).contains("READY") && !p.controller.rowText($0).contains("echo") } }
+        // As in the focus test above: only a row that is exactly READY is the program's output, not the echo of the typed command.
+        func ready(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).trimmingCharacters(in: .whitespaces) == "READY" } }
         func heard(_ p: TerminalPane) -> Bool { (0..<p.controller.gridSize.rows).contains { p.controller.rowText($0).contains("1b 5b 49 1b 5b 4f") } }   // in, then out
         if !pump(8, until: { ready(first) && ready(second) }) { fail("pane focus: the two panes never became ready") }
         // the window becomes key with the keyboard in the second pane: only that program hears focus in
