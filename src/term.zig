@@ -597,6 +597,23 @@ pub const Session = struct {
         return ok;
     }
 
+    /// Selects everything (Cmd+A).
+    pub fn selectAll(self: *Session) void {
+        const t = self.lock();
+        t.selectAll();
+        self.unlock();
+        self.requestWake();
+    }
+
+    /// Moves the selection's free end by line edge or word (see `vt.Terminal.selectMove`); false on the alternate screen.
+    pub fn selectMove(self: *Session, move: vt.Terminal.SelectMove) bool {
+        const t = self.lock();
+        const ok = t.selectMove(move);
+        self.unlock();
+        if (ok) self.requestWake();
+        return ok;
+    }
+
     pub fn findEnd(self: *Session) void {
         const t = self.lock();
         t.findEnd();

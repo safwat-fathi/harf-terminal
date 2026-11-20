@@ -200,7 +200,7 @@ pub const CommandKind = enum { prompt_start, input_start, output_start, command_
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
 
 /// What the terminal answers to XTVERSION (CSI > q). Keep the number in step with build.zig.zon.
-pub const xtversion = "Harf 0.4.3";
+pub const xtversion = "Harf 0.4.4";
 
 /// Harf's default colors (the slice 2 theme): foreground 0.92, background (0.06, 0.06, 0.07).
 pub const theme_fg: Rgb = .{ .r = 235, .g = 235, .b = 235 };
@@ -1056,6 +1056,117 @@ pub const Terminal = struct {
         var sel = std.mem.zeroes(c.GhosttySelection);
         if (c.ghostty_terminal_select_output(self.handle, &ref, &sel) != c.GHOSTTY_SUCCESS) return false;
         self.setSelection(sel);
+        return true;
+    }
+
+    /// Selects everything, the scrollback and the screen (Cmd+A). Works on the alternate screen too: it is the visible page then.
+    pub fn selectAll(self: *Terminal) void {
+        var sel = std.mem.zeroes(c.GhosttySelection);
+        if (c.ghostty_terminal_select_all(self.handle, &sel) != c.GHOSTTY_SUCCESS) return;
+        self.sel_extending = false;
+        self.setSelection(sel);
+    }
+
+    pub const SelectMove = enum(u8) { line_left, line_right, word_left, word_right };
+
+    /// An empty cell or a space: not part of any word.
+    fn cellIsBlank(ref: *const c.GhosttyGridRef) bool {
+        var raw: c.GhosttyCell = undefined;
+        var has: bool = false;
+        var cp: u32 = 0;
+        if (c.ghostty_grid_ref_cell(ref, &raw) != c.GHOSTTY_SUCCESS) return true;
+        _ = c.ghostty_cell_get(raw, c.GHOSTTY_CELL_DATA_HAS_TEXT, &has);
+        _ = c.ghostty_cell_get(raw, c.GHOSTTY_CELL_DATA_CODEPOINT, &cp);
+        return !has or cp == ' ';
+    }
+
+    /// The screen cell after (or before) `at`, wrapping across rows; null past the ends of the screen.
+    fn stepCell(self: *Terminal, at: c.GhosttyPointCoordinate, forward: bool) ?c.GhosttyPointCoordinate {
+        const cols = self.size().cols;
+        if (forward) {
+            if (at.x + 1 < cols) return .{ .x = at.x + 1, .y = at.y };
+            if (at.y + 1 < self.scrollbackRows() + self.size().rows) return .{ .x = 0, .y = at.y + 1 };
+        } else {
+            if (at.x > 0) return .{ .x = at.x - 1, .y = at.y };
+            if (at.y > 0 and cols > 0) return .{ .x = cols - 1, .y = at.y - 1 };
+        }
+        return null;
+    }
+
+    /// The nearest word edge past `at` (the start of a word going left, its end going right), by libghostty's word rules (the same as a
+    /// double-click). When `from` already sits on an edge it looks from the next cell on, so repeated presses keep moving.
+    fn wordEdge(self: *Terminal, from: c.GhosttyGridRef, at: c.GhosttyPointCoordinate, left: bool) ?c.GhosttyGridRef {
+        const sz = self.size();
+        const total: u32 = @intCast(self.scrollbackRows() + sz.rows);
+        if (sz.cols == 0 or total == 0) return null;
+        const limit = self.gridRef(c.GHOSTTY_POINT_TAG_SCREEN, if (left) 0 else sz.cols - 1, if (left) 0 else total - 1) orelse return null;
+        const past: std.math.Order = if (left) .lt else .gt;
+        var look = from;
+        var tries: u8 = 0;
+        while (tries < 4) : (tries += 1) { // a word edge, a run of blanks, the word beyond it
+            var o = std.mem.zeroes(c.GhosttyTerminalSelectWordBetweenOptions);
+            o.size = @sizeOf(c.GhosttyTerminalSelectWordBetweenOptions);
+            o.start = look;
+            o.end = limit;
+            var word = std.mem.zeroes(c.GhosttySelection);
+            if (c.ghostty_terminal_select_word_between(self.handle, &o, &word) != c.GHOSTTY_SUCCESS) return null;
+            const edge = if (left) word.start else word.end;
+            const e = self.screenCoord(&edge) orelse return null;
+            if (!cellIsBlank(&word.start) and pointOrder(e.x, e.y, at.x, at.y) == past) return edge;
+            // a run of blanks counts as a "word" to the library, and from an edge there is no progress: look from past this one
+            const next = self.stepCell(e, !left) orelse return null;
+            look = self.gridRef(c.GHOSTTY_POINT_TAG_SCREEN, next.x, next.y) orelse return null;
+        }
+        return null;
+    }
+
+    /// Moves the free end of the selection to the start or end of the logical line (wrapped rows are one line, the prompt is part of it)
+    /// or to the next word edge, left or right. With no selection it starts at the cursor, which is the shell's caret. The selection is the
+    /// terminal's own, so Cmd+C copies it and a mouse or Shift+click selection can be extended this way. False on the alternate screen
+    /// and while the program has the kitty keyboard protocol on (Claude Code, editors): it edits its own input and wants the key.
+    // ponytail: cells, not carets, are what a selection holds (both ends are inclusive), so reversing direction can leave one cell selected
+    // where an editor would collapse to nothing. A caret-based anchor and focus pair is the upgrade if that matters.
+    pub fn selectMove(self: *Terminal, move: SelectMove) bool {
+        if (self.onAlternateScreen() or self.kittyFlags() != 0) return false;
+        const left = move == .line_left or move == .word_left;
+        const line = move == .line_left or move == .line_right;
+        var sel = std.mem.zeroes(c.GhosttySelection);
+        const had = c.ghostty_terminal_get(self.handle, c.GHOSTTY_TERMINAL_DATA_SELECTION, &sel) == c.GHOSTTY_SUCCESS;
+        if (!had) {
+            var cx: u16 = 0;
+            var cy: u16 = 0;
+            _ = c.ghostty_terminal_get(self.handle, c.GHOSTTY_TERMINAL_DATA_CURSOR_X, &cx);
+            _ = c.ghostty_terminal_get(self.handle, c.GHOSTTY_TERMINAL_DATA_CURSOR_Y, &cy);
+            // going left the first cell is the one before the cursor, so the character under the cursor stays out
+            const x = if (left and cx > 0) cx - 1 else cx;
+            const ref = self.gridRef(c.GHOSTTY_POINT_TAG_SCREEN, x, @intCast(self.scrollbackRows() + cy)) orelse return true;
+            sel = .{ .start = ref, .end = ref, .rectangle = false };
+        }
+        const here = self.screenCoord(&sel.end) orelse return true;
+        var target = sel.end;
+        var moved = false;
+        if (line) {
+            var o = std.mem.zeroes(c.GhosttyTerminalSelectLineOptions);
+            o.size = @sizeOf(c.GhosttyTerminalSelectLineOptions);
+            o.ref = sel.end;
+            var unit = std.mem.zeroes(c.GhosttySelection);
+            if (c.ghostty_terminal_select_line(self.handle, &o, &unit) == c.GHOSTTY_SUCCESS) {
+                const edge = if (left) unit.start else unit.end;
+                const e = self.screenCoord(&edge) orelse return true;
+                const past: std.math.Order = if (left) .lt else .gt;
+                // never backwards: the cursor usually sits in the blanks after the line's last character
+                if (pointOrder(e.x, e.y, here.x, here.y) == past) {
+                    target = edge;
+                    moved = true;
+                }
+            }
+        } else if (self.wordEdge(sel.end, here, left)) |edge| {
+            target = edge;
+            moved = true;
+        }
+        if (!had and !moved and cellIsBlank(&target)) return true; // nothing to select, not even a lone blank cell
+        self.sel_extending = false;
+        self.setSelection(.{ .start = sel.start, .end = target, .rectangle = false });
         return true;
     }
 
@@ -2524,6 +2635,114 @@ test "a single-click drag still selects characters" {
     const got = try dragText(t, 1, .{ 7, 0 }, .{ 13, 0 });
     defer std.testing.allocator.free(got);
     try std.testing.expectEqualStrings("eta gam", got);
+}
+
+fn expectSelected(t: *Terminal, want: []const u8) !void {
+    const got = try t.selectionText(std.testing.allocator);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings(want, got);
+}
+
+test "select all takes the scrollback and the screen" {
+    const t = try Terminal.init(std.testing.allocator, .{ .cols = 10, .rows = 3 });
+    defer t.deinit();
+    t.write("a\r\nb\r\nc\r\nd\r\ne");
+    try std.testing.expect(t.scrollbackRows() >= 2);
+    t.selectAll();
+    try expectSelected(t, "a\nb\nc\nd\ne");
+}
+
+test "line moves select from the cursor to the logical line's edge, the prompt included" {
+    const t = try Terminal.init(std.testing.allocator, .{ .cols = 30, .rows = 5 });
+    defer t.deinit();
+    t.write("prompt % git commit -m hi"); // the cursor sits in the blank after the last character
+    try std.testing.expect(t.selectMove(.line_left));
+    try expectSelected(t, "prompt % git commit -m hi");
+    // nothing right of the cursor: no selection, not even a lone blank cell
+    t.clearSelection();
+    try std.testing.expect(t.selectMove(.line_right));
+    try std.testing.expect(!t.hasSelection());
+    // cursor on the '%': leftwards leaves the character under it out, rightwards takes it
+    t.write("\x1b[1;8H");
+    try std.testing.expect(t.selectMove(.line_left));
+    try expectSelected(t, "prompt");
+    t.clearSelection();
+    try std.testing.expect(t.selectMove(.line_right));
+    try expectSelected(t, "% git commit -m hi");
+}
+
+test "line moves treat soft-wrapped rows as one line" {
+    const t = try Terminal.init(std.testing.allocator, .{ .cols = 10, .rows = 5 });
+    defer t.deinit();
+    t.write("0123456789abcde"); // wraps after the 9: the cursor is on row 1, column 5
+    try std.testing.expect(t.selectMove(.line_left));
+    try expectSelected(t, "0123456789abcde");
+    t.clearSelection();
+    t.write("\x1b[1;4H"); // row 0, column 3
+    try std.testing.expect(t.selectMove(.line_right));
+    try expectSelected(t, "3456789abcde");
+}
+
+test "word moves step word by word and repeat" {
+    const t = try Terminal.init(std.testing.allocator, .{ .cols = 30, .rows = 5 });
+    defer t.deinit();
+    t.write("alpha beta gamma delta");
+    try std.testing.expect(t.selectMove(.word_left));
+    try expectSelected(t, "delta");
+    try std.testing.expect(t.selectMove(.word_left));
+    try expectSelected(t, "gamma delta");
+    try std.testing.expect(t.selectMove(.word_left));
+    try expectSelected(t, "beta gamma delta");
+    try std.testing.expect(t.selectMove(.word_left));
+    try expectSelected(t, "alpha beta gamma delta");
+    // at the start there is nowhere to go: the selection stays
+    try std.testing.expect(t.selectMove(.word_left));
+    try expectSelected(t, "alpha beta gamma delta");
+    t.clearSelection();
+    t.write("\x1b[1;7H"); // column 6, the 'b' of beta
+    try std.testing.expect(t.selectMove(.word_right));
+    try expectSelected(t, "beta");
+    try std.testing.expect(t.selectMove(.word_right));
+    try expectSelected(t, "beta gamma");
+}
+
+test "a mouse selection can be extended from the keyboard" {
+    const t = try Terminal.init(std.testing.allocator, .{ .cols = 30, .rows = 5 });
+    defer t.deinit();
+    t.write("alpha beta gamma delta");
+    const got = try selectText(t, 6, 0, 9, 0);
+    std.testing.allocator.free(got);
+    try std.testing.expect(t.selectMove(.word_right));
+    try expectSelected(t, "beta gamma");
+    try std.testing.expect(t.selectMove(.line_right));
+    try expectSelected(t, "beta gamma delta");
+}
+
+test "the keyboard selection moves leave a program with the kitty keyboard protocol on to itself" {
+    const t = try Terminal.init(std.testing.allocator, .{ .cols = 30, .rows = 5 });
+    defer t.deinit();
+    t.write("alpha beta");
+    t.write("\x1b[>5u"); // what Claude Code sets
+    try std.testing.expect(t.kittyFlags() != 0);
+    inline for (.{ Terminal.SelectMove.line_left, .line_right, .word_left, .word_right }) |m| {
+        try std.testing.expect(!t.selectMove(m));
+    }
+    try std.testing.expect(!t.hasSelection());
+    t.write("\x1b[<u"); // popped: the shell's again
+    try std.testing.expect(t.selectMove(.word_left));
+    try expectSelected(t, "beta");
+}
+
+test "the keyboard selection moves leave the alternate screen to its program" {
+    const t = try Terminal.init(std.testing.allocator, .{ .cols = 30, .rows = 5 });
+    defer t.deinit();
+    t.write("\x1b[?1049hsome text");
+    inline for (.{ Terminal.SelectMove.line_left, .line_right, .word_left, .word_right }) |m| {
+        try std.testing.expect(!t.selectMove(m));
+    }
+    try std.testing.expect(!t.hasSelection());
+    t.selectAll(); // Cmd+A still works there: it selects the visible page
+    try expectSelected(t, "some text");
 }
 
 test "selection copy joins soft wraps and keeps hard newlines, without trailing blanks" {

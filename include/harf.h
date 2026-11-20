@@ -130,6 +130,12 @@ int harf_term_scroll_prompt(HarfTerm *t, int delta);
 /* Selects the output of the last finished command (the shell's OSC 133 marks); Cmd+C then copies it. Returns 1 if something was
    selected, 0 if not (no marks, or the alternate screen: the key then belongs to the program). */
 int harf_term_select_output(HarfTerm *t);
+/* Selects everything, scrollback included (Cmd+A); Cmd+C then copies it. */
+void harf_term_select_all(HarfTerm *t);
+/* Moves the free end of the selection (starting one at the cursor if there is none): `kind` 0 to the start of the line, 1 to its end,
+   2 to the previous word edge, 3 to the next. Returns 1 if the key was taken, 0 on the alternate screen or while the program has the kitty
+   keyboard protocol on (the key then belongs to the program). */
+int harf_term_select_move(HarfTerm *t, int kind);
 /* Ends the find and clears its highlight. */
 void harf_term_find_end(HarfTerm *t);
 /* Clear the screen (and the scrollback if `scrollback` is not 0), then type Ctrl+L so a shell redraws its prompt. On the

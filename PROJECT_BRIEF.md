@@ -176,9 +176,10 @@ Test matrix: shell, vim/neovim, tmux, htop, less, fzf, **Claude Code**, **Codex 
 - **Default shortcuts** (all remappable via `keybind`; editing keys are in §5):
   - `Cmd+Up` / `Down`: jump to previous / next prompt (OSC 133 marks).
   - `Cmd+K` clear screen & scrollback, `Ctrl+L` clear visible screen, `Cmd+F` find, `Cmd+C` / `V` copy and paste.
+  - `Cmd+A` select all; `Cmd+Shift+Left/Right` and `Option+Shift+Left/Right` select from the cursor to the line edge / word by word; `Cmd+Z` undo at the prompt (`^_`).
   - `Cmd+T` / `W` new / close tab or pane, `Cmd+D` / `Cmd+Shift+D` split, `Cmd+1..9` switch tab.
   - `Cmd+Click` opens OSC 8 hyperlinks, plain URLs, and `path:line:col`.
-  - Not yet built: `Option+Click` at prompt (send arrow keys), `Cmd+Shift+Left/Right` select to line edge, `Cmd+Z` undo at prompt (`^_`).
+  - Not yet built: `Option+Click` at prompt (send arrow keys).
 - Plain-text config (`~/.config/harf/config`), hot reload of config and themes, light/dark themes + system appearance tracking.
 
 ### v2 (parked, needs a permission model)

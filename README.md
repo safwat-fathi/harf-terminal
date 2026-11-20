@@ -17,7 +17,7 @@ Harf pairs a **Zig** core (PTY, VT parser/grid, UAX #9 bidi, CoreText shaping, C
 - **Native macOS Shell**:
   - Windows, native tabs, and split panes (`Cmd+D` / `Cmd+Shift+D`).
   - Find bar (`Cmd+F`) across scrollback and active screen with all visible matches highlighted.
-  - Editor-style cursor/edit shortcuts (`Option+Left/Right`, `Option+Backspace/Delete`, `Cmd+Left/Right`).
+  - Editor-style cursor/edit shortcuts (`Option+Left/Right`, `Option+Backspace/Delete`, `Cmd+Left/Right`), keyboard selection (`Cmd+A`, `Cmd+Shift+Left/Right`, `Option+Shift+Left/Right`) and `Cmd+Z` undo at the prompt.
   - OSC 8 clickable links, plain URLs, and `path:line:col` file paths (`Cmd+Click` with `Cmd+Hover` preview; **Harf → Choose Editor…**), OSC 52 clipboard writes (gated to the focused pane), and OSC 9/777 notifications.
   - Paste guard (`paste_guard = on` by default) confirms pastes over 100 KB or multi-line pastes when bracketed paste is off.
   - Drop a file from Finder onto a terminal (or a split pane) to type its shell-quoted path at the cursor.
@@ -122,11 +122,17 @@ paste_guard = on              # on | off
 | `Cmd+Shift+]` / `Cmd+Shift+[` | Next / previous tab (`Cmd+1`–`9` to jump) |
 | `Cmd+F` / `Cmd+G` / `Cmd+Shift+G` | Find / Next match / Previous match |
 | `Cmd+C` / `Cmd+V` | Copy / Paste |
+| `Cmd+A` | Select all, scrollback included |
+| `Cmd+Shift+Left` / `Cmd+Shift+Right` | Select from the cursor to the start / end of the line (wrapped rows are one line; the prompt counts) |
+| `Option+Shift+Left` / `Option+Shift+Right` | Extend the selection one word left / right (from the cursor when nothing is selected) |
+| `Cmd+Z` | Undo the last edit of the prompt line (sends `Ctrl+_`, which zsh and readline bind to undo) |
 | `Cmd+K` / `Ctrl+L` | Clear screen & scrollback / Clear visible screen |
 | `Cmd+Up` / `Cmd+Down` | Jump to previous / next prompt (OSC 133) |
 | `Cmd+Shift+A` | Select last command output (OSC 133) |
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | Increase / decrease / reset font size |
 | `Cmd+,` / `Cmd+Shift+,` | Open config / Reload config |
+
+`Cmd+Shift+Left/Right` and `Option+Shift+Left/Right` are left to the program on the alternate screen and while a program has the kitty keyboard protocol on (Claude Code does, and moves its own caret with them); `Cmd+A` and `Cmd+Z` work everywhere.
 
 ## Troubleshooting
 

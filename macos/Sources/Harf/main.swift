@@ -995,6 +995,28 @@ func selfTest() -> Never {
         NSApp.delegate = nil
     }
 
+    // 2k2. Select all, the keyboard selection moves (word and line edge, from the cursor) and Cmd+Z, as real key events with the
+    // default bindings. The first row is a separate logical line, so only Cmd+A can reach it.
+    do {
+        let dir = NSTemporaryDirectory() + "harf-selftest-selkeys-\(getpid())"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        Settings.shared.load(directory: dir)
+        guard let c = TerminalController(argv: ["/bin/sh", "-c", "printf 'first line\\nalpha beta gamma'; sleep 8"], frame: NSSize(width: 700, height: 420)) else { fail("cannot start the selection-key session") }
+        if !pump(5, until: { c.rowText(1).contains("gamma") }) { fail("selection keys: the text did not arrive ('\(c.rowText(1))')") }
+        func press(_ name: String, _ ev: NSEvent, expect want: String) {
+            if !c.view.performKeyEquivalent(with: ev) { fail("selection keys: \(name) was not handled by the view") }
+            if c.selectedText() != want { fail("selection keys: after \(name) the selection is '\(String(describing: c.selectedText()))', want '\(want)'") }
+        }
+        let left: NSEvent.ModifierFlags = [.numericPad, .function]
+        press("Option+Shift+Left", keyEvent(123, "\u{F702}", left.union([.option, .shift])), expect: "gamma")
+        press("Option+Shift+Left again", keyEvent(123, "\u{F702}", left.union([.option, .shift])), expect: "beta gamma")
+        press("Cmd+Shift+Left", keyEvent(123, "\u{F702}", left.union([.command, .shift])), expect: "alpha beta gamma")
+        press("Cmd+A", keyEvent(0, "a", [.command]), expect: "first line\nalpha beta gamma")
+        c.close()
+        expectBytes("cmd+z sends ctrl+_", prelude: "", count: 1, events: [keyEvent(6, "z", [.command])], contains: "1f")
+    }
+
     // 2l. With several panes, a shortcut acts on the pane that has the keyboard. AppKit offers a key to every terminal view in the
     // window in turn, so a view must refuse it unless it is the one in focus (before this, the first pane took every Cmd+V).
     do {

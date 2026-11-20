@@ -15,7 +15,7 @@ final class ActionBox: NSObject {
 private let menuLayout: [(String, [(String, String)])] = [
     ("Harf", [("Settings…", "open_config"), ("Choose Editor…", "choose_editor"), ("Reload Config", "reload_config"), ("Quit Harf", "quit")]),
     ("Shell", [("New Window", "new_window"), ("New Tab", "new_tab"), ("Close", "close"), ("Split Right", "split_right"), ("Split Down", "split_down"), ("Clear", "clear")]),
-    ("Edit", [("Copy", "copy"), ("Paste", "paste"), ("Find…", "find"), ("Find Next", "find_next"), ("Find Previous", "find_prev")]),
+    ("Edit", [("Undo", "undo"), ("Copy", "copy"), ("Paste", "paste"), ("Select All", "select_all"), ("Find…", "find"), ("Find Next", "find_next"), ("Find Previous", "find_prev")]),
     ("View", [("Larger", "font_larger"), ("Smaller", "font_smaller"), ("Actual Size", "font_reset")]),
     ("Window", [("Next Tab", "next_tab"), ("Previous Tab", "prev_tab"), ("Next Pane", "focus_next"), ("Previous Pane", "focus_prev")]),
     ("About", [("About Harf", "about")]),
@@ -186,11 +186,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "find": pane?.showFind()
         case "find_next", "find_prev":
             if let pane, pane.isFindOpen { pane.findStep(older: action == "find_next") } else { pane?.showFind() }
-        case "copy", "paste":
-            // the find field has the keyboard: it is the one to paste into, and to copy from when the user selected something in
-            // it. Otherwise Cmd+C copies the terminal's selection, which is where the current find match is.
-            if let text = (c?.view.window ?? NSApp.keyWindow)?.firstResponder as? NSTextView, action == "paste" || text.selectedRange.length > 0 {
-                if action == "copy" { text.copy(nil) } else { text.paste(nil) }
+        case "copy", "paste", "select_all", "undo":
+            // the find field has the keyboard: it is the one to paste into, select all in and undo in, and to copy from when the user
+            // selected something in it. Otherwise Cmd+C copies the terminal's selection, which is where the current find match is.
+            if let text = (c?.view.window ?? NSApp.keyWindow)?.firstResponder as? NSTextView, action != "copy" || text.selectedRange.length > 0 {
+                switch action {
+                case "copy": text.copy(nil)
+                case "paste": text.paste(nil)
+                case "select_all": text.selectAll(nil)
+                default: text.undoManager?.undo()
+                }
             } else if let c { return c.perform(action, arg: arg) } else { return pane?.controller.perform(action, arg: arg) ?? false }
         default: return c?.perform(action, arg: arg) ?? pane?.controller.perform(action, arg: arg) ?? false
         }

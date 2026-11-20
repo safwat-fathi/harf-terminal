@@ -76,6 +76,16 @@ pub const Action = enum {
     next_prompt,
     /// Select the last finished command's output (OSC 133), so Cmd+C copies it.
     select_output,
+    /// Select everything, the scrollback included, so Cmd+C copies it.
+    select_all,
+    /// Move the end of the selection (starting one at the cursor) to the line's start / end, or to the previous / next word edge.
+    /// On the alternate screen, or while the program has the kitty keyboard protocol on, the key goes to the program.
+    select_line_left,
+    select_line_right,
+    select_word_left,
+    select_word_right,
+    /// Ctrl+_ to the shell: readline and zsh undo the last edit of the line.
+    undo,
     find,
     find_next,
     find_prev,
@@ -599,8 +609,8 @@ pub const template =
     \\
     \\# Key bindings: keybind = trigger = action. Triggers are modifiers (cmd, ctrl, option, shift) and a key, joined with +:
     \\# cmd+t, option+left, cmd+shift+d, f5, cmd+]. Your lines replace the default for the same trigger; `unbind` removes it.
-    \\# Actions: new_window new_tab close split_right split_down focus_next focus_prev next_tab prev_tab goto_tab:N clear clear_view prev_prompt next_prompt select_output find
-    \\# find_next find_prev copy paste font_larger font_smaller font_reset reload_config open_config quit
+    \\# Actions: new_window new_tab close split_right split_down focus_next focus_prev next_tab prev_tab goto_tab:N clear clear_view prev_prompt next_prompt select_output select_all
+    \\# select_line_left select_line_right select_word_left select_word_right undo find find_next find_prev copy paste font_larger font_smaller font_reset reload_config open_config quit
     \\# and send:TEXT (up to 63 bytes, with \e \n \r \t \\ \xNN) to type something into the program.
     \\# keybind = cmd+t = new_tab
     \\# keybind = cmd+w = unbind
@@ -632,6 +642,12 @@ pub const default_keybinds =
     \\keybind = cmd+up = prev_prompt
     \\keybind = cmd+down = next_prompt
     \\keybind = cmd+shift+a = select_output
+    \\keybind = cmd+a = select_all
+    \\keybind = cmd+shift+left = select_line_left
+    \\keybind = cmd+shift+right = select_line_right
+    \\keybind = option+shift+left = select_word_left
+    \\keybind = option+shift+right = select_word_right
+    \\keybind = cmd+z = undo
     \\keybind = cmd+f = find
     \\keybind = cmd+g = find_next
     \\keybind = cmd+shift+g = find_prev
@@ -678,6 +694,12 @@ test "the defaults parse without a warning and bind the shell's shortcuts" {
     try testing.expectEqual(Action.prev_prompt, find(c, super, "up").?.action);
     try testing.expectEqual(Action.next_prompt, find(c, super, "down").?.action);
     try testing.expectEqual(Action.select_output, find(c, super | shift, "a").?.action);
+    try testing.expectEqual(Action.select_all, find(c, super, "a").?.action);
+    try testing.expectEqual(Action.select_line_left, find(c, super | shift, "left").?.action);
+    try testing.expectEqual(Action.select_line_right, find(c, super | shift, "right").?.action);
+    try testing.expectEqual(Action.select_word_left, find(c, alt | shift, "left").?.action);
+    try testing.expectEqual(Action.select_word_right, find(c, alt | shift, "right").?.action);
+    try testing.expectEqual(Action.undo, find(c, super, "z").?.action);
     try testing.expectEqual(ShellIntegration.auto, c.shell_integration);
     // nothing is bound to the editing keys the core already maps (Option+arrows, Cmd+arrows)
     try testing.expect(find(c, alt, "left") == null);

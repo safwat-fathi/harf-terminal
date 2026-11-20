@@ -144,6 +144,19 @@ export fn harf_term_select_output(t: *HarfTerm) c_int {
     return @intFromBool(t.session.selectOutput());
 }
 
+/// Selects everything, scrollback included (Cmd+A); Cmd+C then copies it.
+export fn harf_term_select_all(t: *HarfTerm) void {
+    t.session.selectAll();
+}
+
+/// Moves the free end of the selection (starting one at the cursor if there is none): `kind` 0 to the start of the line, 1 to its end,
+/// 2 to the previous word edge, 3 to the next. Returns 1 if the key was taken, 0 on the alternate screen or while the program has the kitty
+/// keyboard protocol on (the key then belongs to the program).
+export fn harf_term_select_move(t: *HarfTerm, kind: c_int) c_int {
+    if (kind < 0 or kind > 3) return 0;
+    return @intFromBool(t.session.selectMove(@enumFromInt(kind)));
+}
+
 /// Ends the find and clears its selection.
 export fn harf_term_find_end(t: *HarfTerm) void {
     t.session.findEnd();

@@ -281,6 +281,12 @@ final class TerminalController {
         case "prev_prompt": return harf_term_scroll_prompt(t, -1) == 1   // false (alternate screen): the key is the program's
         case "next_prompt": return harf_term_scroll_prompt(t, 1) == 1
         case "select_output": return harf_term_select_output(t) == 1
+        case "select_all": harf_term_select_all(t)
+        case "select_line_left": return harf_term_select_move(t, 0) == 1   // false (alternate screen, kitty keyboard protocol on): the key is the program's
+        case "select_line_right": return harf_term_select_move(t, 1) == 1
+        case "select_word_left": return harf_term_select_move(t, 2) == 1
+        case "select_word_right": return harf_term_select_move(t, 3) == 1
+        case "undo": _ = [UInt8(0x1f)].withUnsafeBufferPointer { harf_term_input(t, $0.baseAddress, 1) }   // Ctrl+_: the shell undoes its last edit
         case "send": _ = arg.withUnsafeBufferPointer { harf_term_input(t, $0.baseAddress, arg.count) }
         default: return false
         }
